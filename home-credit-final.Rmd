@@ -1,0 +1,291 @@
+---
+title: "Home Credit Default Risk Workbook"
+author: "Karson Eilers"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: "darkly"
+    toc: true
+    
+---
+
+```{r config, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+library(tidyverse)
+library(ggridges)
+library(viridis)
+library(hrbrthemes)
+library(caret)
+library(naivebayes)
+library(rpart)
+
+```
+
+# Introduction & Business Problem
+
+Home Credit Group provides lending services to individuals without sufficient credit histories to access services at other financial institutions. Home Credit uses non-traditional data about customers to determine whether loan applicants are likely to make loan payments on time. The training data set suggests that approximately 8.1% of loan recipients are delinquent. Delinquent loans are disruptive to Home Credit’s business and interfere with their ability to lend to extend credit to more customers. Delinquent loans cost Home Credit approximately $657,409,302 per month in installment payments.  
+
+A better model for determining which applicants are likely to be delinquent benefits Home Credit in two ways. First, it could mitigate delinquency and default costs. Second, there may be qualified candidates who are overlooked by Home Credit’s current model. A model that accurately considers additional factors could expand Home Credit’s customer base. The analyst will employ at least one two predictive models to classify which applicants in the ‘testing’ data set should qualify for credit. 
+
+
+# Exploratory Data Analysis
+
+## Datasets
+There are three relevant data sets for this particular modeling assignment: "application_train.csv", "application_test.csv", and "bureau.csv".
+```{r data_imports}
+training_dataset <- read.csv("application_train.csv")
+bureau_dataset <- read.csv("bureau.csv")
+
+```
+
+The training data has `r length(training_dataset)` variables and the testing data has `r length(testing_dataset)`. The testing data excludes the target variable ("TARGET"). Bureau is a supplemental data set, which can be used for additional data mining. It can be joined with both the testing and training data sets on the SK_ID_CURR variable. It has `r length(bureau_dataset)` variables.
+
+## Target Variable
+The Target variable is structured as a binary integer variable. A 1 indicates that the borrower has defaulted on their loan. A 0 indicates that the borrower as not defaulted. The mean value of the Target variable demonstrates the proportion of defaults to non-defaults within the training set. Specifically, it indicates that `r mean(training_dataset$TARGET)*100` percent of borrowers in the training data defaulted on their loans. This is a clear class imbalance, that may cause problems for modeling the data.
+```{r target_var}
+summary(training_dataset$TARGET)
+
+```
+## Expected Predictor Variables
+Traditional credit models tend to rely on factors that mechanically contribute to an individual's ability to repay a loan. These may include income, employment history, annuity amount, loan type, etc. Variables formatted as characters should first be converted to factors. Several of these predictor variables appear to have a wide variation. Several of the the numeric values appear to have significant outliers. In some cases, like DAYS_EMPLOYED, the max value seems to suggest that an individual has been employed for `r round(max(training_dataset$DAYS_EMPLOYED)/365,1)` years. Again, the data formatting will need to address these.
+
+```{r predictor_variables}
+training_dataset <- training_dataset %>% mutate(across(where(is.character), as.factor))
+
+training_dataset %>%
+  select(TARGET,
+         OCCUPATION_TYPE,
+         AMT_INCOME_TOTAL,
+         AMT_CREDIT,
+         AMT_ANNUITY,
+         NAME_HOUSING_TYPE,
+         NAME_INCOME_TYPE,
+         DAYS_EMPLOYED) %>%
+  summary()
+
+```
+Let's take take a closer look at the relationships between the target variable and occupation type. 
+
+```{r}
+training_dataset %>% 
+  filter(AMT_INCOME_TOTAL < 1000000 & TARGET == 1) %>%
+  ggplot(aes(x = AMT_INCOME_TOTAL, y = AMT_CREDIT)) + geom_point() + facet_wrap(vars(OCCUPATION_TYPE))
+
+
+```
+```{r target-income}
+training_dataset %>%
+  filter(AMT_INCOME_TOTAL < 1000000) %>%
+  ggplot(aes(x = AMT_INCOME_TOTAL, y = OCCUPATION_TYPE, fill=..x..)) + 
+  geom_density_ridges_gradient(scale = 4) +
+  scale_fill_viridis() + 
+  theme_ridges()
+
+```
+
+# Modeling
+## Data preparation
+
+The first step is to select which features we want to include in the model. Naive Bayes models tend to perform well with messy data, so we will include about 25 variables (some will be dropped later).
+```{r var_selection}
+training_dataset <- training_dataset %>%
+  select(
+    SK_ID_CURR,
+    TARGET,
+    NAME_CONTRACT_TYPE,
+    OCCUPATION_TYPE,
+    CODE_GENDER,
+    AMT_INCOME_TOTAL,
+    AMT_CREDIT,
+    AMT_ANNUITY,
+    AMT_GOODS_PRICE,
+    NAME_FAMILY_STATUS,
+    NAME_HOUSING_TYPE,
+    REGION_POPULATION_RELATIVE,
+    DAYS_ID_PUBLISH,
+    REGION_RATING_CLIENT,
+    REGION_RATING_CLIENT_W_CITY,
+    YEARS_BUILD_MODE,
+    AMT_REQ_CREDIT_BUREAU_YEAR,
+    DAYS_LAST_PHONE_CHANGE,
+    NONLIVINGAREA_MODE,
+    FLAG_WORK_PHONE,
+    FLAG_CONT_MOBILE,
+    DAYS_BIRTH,
+    NAME_INCOME_TYPE,
+    FLAG_OWN_CAR,
+    FLAG_OWN_REALTY,
+    NAME_EDUCATION_TYPE,
+    DAYS_EMPLOYED
+  )
+
+```
+
+We want to include one variable from the bureau data: days_credit. The next step in preparing the data for modeling is to merge bureau with the training and testing data sets. The Bureau set contains numerous reports for each customer ID (1:many relationship). We only care about the earliest credit report for establishing credit history length. 
+```{r data_merge}
+
+bureau_dataset <- bureau_dataset[-c(17)]
+
+merged_training_data <- merge(training_dataset, bureau_dataset, by="SK_ID_CURR")
+
+training_dataset1 <- merged_training_data %>%
+  group_by(
+    SK_ID_CURR,
+    TARGET,
+    NAME_CONTRACT_TYPE,
+    OCCUPATION_TYPE,
+    CODE_GENDER,
+    AMT_INCOME_TOTAL,
+    AMT_CREDIT,
+    AMT_ANNUITY,
+    AMT_GOODS_PRICE,
+    NAME_FAMILY_STATUS,
+    NAME_HOUSING_TYPE,
+    REGION_POPULATION_RELATIVE,
+    DAYS_ID_PUBLISH,
+    REGION_RATING_CLIENT,
+    REGION_RATING_CLIENT_W_CITY,
+    YEARS_BUILD_MODE,
+    AMT_REQ_CREDIT_BUREAU_YEAR,
+    DAYS_LAST_PHONE_CHANGE,
+    NONLIVINGAREA_MODE,
+    FLAG_WORK_PHONE,
+    FLAG_CONT_MOBILE,
+    DAYS_BIRTH,
+    NAME_INCOME_TYPE,
+    FLAG_OWN_CAR,
+    FLAG_OWN_REALTY,
+    NAME_EDUCATION_TYPE,
+    DAYS_EMPLOYED,
+    DAYS_CREDIT
+  ) %>% slice_min(n=1,DAYS_CREDIT)
+
+
+#dropping the customer ID so it's not accidentally used as a predictor
+training_dataset <- training_dataset[-c(1)]
+
+```
+
+## Creating training and testing partitions
+
+We will need to partition the training set into (at least) two partitions - one for training the data and one for testing. We need to test on a training partition before deploying the model to the formal testing set to measure accuracy (testing_set doesn't have the TARGET variable)
+
+This code will partition the training set into two: train_part and train_test.
+```{r}
+set.seed(123)
+train_part_index <- createDataPartition(training_dataset$TARGET, p = 0.7, list=FALSE)
+train_part <- training_dataset[train_part_index,]
+test_part <- training_dataset[-train_part_index,]
+
+train_part$TARGET <- as.factor(train_part$TARGET)
+test_part$TARGET <- as.factor(test_part$TARGET)
+
+```
+
+
+## Model Training
+### NB Model 1
+The first Naive Bayes model employs the naivebayes R package. Because of the very wide distribution of data, we are concerned about a high ratio of zero probability outcomes influencing the predictor. In fact, warnings have been disabled because the caret package identified so many of these outcomes that portion of this Markdown file would be otherwise unreadable. In Naive Bayes models probabilities are calculated in a chain, so a zero probability in one predictor could nullify the input from others. We employ a laplace estimator of 1 to mitiate this problem. 
+```{r nb1}
+#creates 1st (baseline) nb model
+nb1 <- naive_bayes(TARGET ~ ., data=train_part, laplace=1, usekernel=T)
+
+#predicted class holds predict values from nb1 model
+nb1_predict_class <- predict(nb1, newdata = train_part)
+nb1_predict_test <- predict(nb1, newdata = test_part)
+
+#creates confusion matrix of predictions on training and testing subsets of training data.
+cm <- confusionMatrix(data = nb1_predict_class, reference = train_part$TARGET)
+cm_test <- confusionMatrix(data <- nb1_predict_test, reference = test_part$TARGET)
+
+#outputs confusion matrices
+print(cm)
+print(cm_test)
+```
+
+
+### NB Model 2
+The first model performed well only in measure of accuracy. As the confusion matrices indicate, the model predicted almost zero instances of the minority class. It essentially repeats the majority classifier. This is likely caused by the class imbalance. The second model will use the naivebayes method in caret with cross validation and several different tuning approaches to see whether these problems can be corrected.
+```{r}
+# set up 10-fold cross validation procedure
+ctrl10x <- trainControl(
+  method = "cv", 
+  number = 10
+  )
+
+# Tuning grid (testing aout a variety of possibilities)
+nb_tune_grid <- expand.grid(usekernel = c(TRUE, FALSE),
+                            laplace = c(0, 0.5, 1),
+                            adjust = c(0.75, 1, 1.25, 1.5)
+                            )
+
+# train model using caret. Features include: 10x cross validation to avoid under/over training and a variety of tuning measures. Uses poisson distribution for numeric values which first model used by default. 
+nb2 <- train(
+  x = train_part[2:27],
+  y = train_part$TARGET,
+  method = "naive_bayes",
+  usepoisson = TRUE,
+  tuneGrid = nb_tune_grid,
+  trControl = ctrl10x
+  )
+
+# final tuning parameters:
+print(nb2$finalModel$tuneValue)
+
+#plots tuning approaches and outcomes. It appears some of the assumptions (including laplace) were not as effective
+plot(nb2)
+
+#model predictions for training subset of training data
+nb2_predict_class <- predict(nb2, newdata = train_part)
+
+#model predictions for testing subset of training data
+nb2_predict_test <- predict(nb2, newdata = train_part)
+
+#confusion matrices for training and testing data respectively
+cm <- confusionMatrix(data = nb2_predict_class, reference = train_part$TARGET)
+cm_test <- confusionMatrix(data <- nb2_predict_test, reference = train_part$TARGET)
+
+#confusion matrix outputs
+print(cm)
+print(cm_test)
+
+```
+
+
+### NB Model 3
+The final model using upsampled data performed better than the prior two. The accuracy was lower, by the Cohen kappa value improved considerably, particularly for the training set. The outcomes of the testing set were weaker (lower accuracy and much lower kappa value), but this model is still predicting TARGET = 1 in some instances. 
+```{r nb3}
+
+training_upsample <- upSample(train_part, train_part$TARGET)
+
+nb3 <- train(
+  x = training_upsample[,2:27],
+  y = training_upsample$TARGET,
+  method = "naive_bayes",
+  usepoisson = TRUE,
+  tuneGrid = nb_tune_grid,
+  trControl = ctrl10x
+  )
+
+#class predictions for upsampled training subset of training data
+nb3_predict_class <- predict(nb3, newdata = training_upsample)
+
+#class predictions for testing subset of training data
+nb3_predict_test <- predict(nb3, newdata = test_part)
+
+#plots nb3 tuning approaches 
+plot(nb3)
+
+#prints out model 3's final parameters
+print(nb3$finalModel$tuneValue)
+
+#generates confusion matrices for the training and testing predictions
+cm <- confusionMatrix(data = nb3_predict_class, reference = training_sample$TARGET)
+cm_test <- confusionMatrix(data <- nb3_predict_test, reference = t_test$TARGET)
+
+#outputs confusion matrices
+print(cm)
+print(cm_test)
+```
+
+
+
