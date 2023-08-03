@@ -30,14 +30,14 @@ A better model for determining which applicants are likely to be delinquent bene
 # Exploratory Data Analysis
 
 ## Datasets
-There are three relevant data sets for this particular modeling assignment: "application_train.csv", "application_test.csv", and "bureau.csv".
+There are three relevant data sets for this particular modeling assignment: "application_train.csv", "application_test.csv", and "bureau.csv". The test set will be omitted for the following notebook. 
 ```{r data_imports}
 training_dataset <- read.csv("application_train.csv")
 bureau_dataset <- read.csv("bureau.csv")
 
 ```
 
-The training data has `r length(training_dataset)` variables and the testing data has `r length(testing_dataset)`. The testing data excludes the target variable ("TARGET"). Bureau is a supplemental data set, which can be used for additional data mining. It can be joined with both the testing and training data sets on the SK_ID_CURR variable. It has `r length(bureau_dataset)` variables.
+The training data has `r length(training_dataset)` variables. Bureau is a supplemental data set, which can be used for additional data mining. It can be joined with both the testing and training data sets on the SK_ID_CURR variable. It has `r length(bureau_dataset)` variables.
 
 ## Target Variable
 The Target variable is structured as a binary integer variable. A 1 indicates that the borrower has defaulted on their loan. A 0 indicates that the borrower as not defaulted. The mean value of the Target variable demonstrates the proportion of defaults to non-defaults within the training set. Specifically, it indicates that `r mean(training_dataset$TARGET)*100` percent of borrowers in the training data defaulted on their loans. This is a clear class imbalance, that may cause problems for modeling the data.
@@ -118,46 +118,27 @@ training_dataset <- training_dataset %>%
     DAYS_EMPLOYED
   )
 
+
+
 ```
 
 We want to include one variable from the bureau data: days_credit. The next step in preparing the data for modeling is to merge bureau with the training and testing data sets. The Bureau set contains numerous reports for each customer ID (1:many relationship). We only care about the earliest credit report for establishing credit history length. 
 ```{r data_merge}
 
-bureau_dataset <- bureau_dataset[-c(17)]
+bureau_dataset <- bureau_dataset[c(1,5)]
 
 merged_training_data <- merge(training_dataset, bureau_dataset, by="SK_ID_CURR")
 
-training_dataset1 <- merged_training_data %>%
+training_dataset <- merged_training_data %>%
   group_by(
-    SK_ID_CURR,
-    TARGET,
-    NAME_CONTRACT_TYPE,
-    OCCUPATION_TYPE,
-    CODE_GENDER,
-    AMT_INCOME_TOTAL,
-    AMT_CREDIT,
-    AMT_ANNUITY,
-    AMT_GOODS_PRICE,
-    NAME_FAMILY_STATUS,
-    NAME_HOUSING_TYPE,
-    REGION_POPULATION_RELATIVE,
-    DAYS_ID_PUBLISH,
-    REGION_RATING_CLIENT,
-    REGION_RATING_CLIENT_W_CITY,
-    YEARS_BUILD_MODE,
-    AMT_REQ_CREDIT_BUREAU_YEAR,
-    DAYS_LAST_PHONE_CHANGE,
-    NONLIVINGAREA_MODE,
-    FLAG_WORK_PHONE,
-    FLAG_CONT_MOBILE,
-    DAYS_BIRTH,
-    NAME_INCOME_TYPE,
-    FLAG_OWN_CAR,
-    FLAG_OWN_REALTY,
-    NAME_EDUCATION_TYPE,
-    DAYS_EMPLOYED,
-    DAYS_CREDIT
+    SK_ID_CURR
   ) %>% slice_min(n=1,DAYS_CREDIT)
+
+training_dataset$DAYS_BIRTH <- abs(training_dataset$DAYS_BIRTH)
+training_dataset$DAYS_CREDIT <- abs(training_dataset$DAYS_CREDIT)
+training_dataset$DAYS_ID_PUBLISH <- abs(training_dataset$DAYS_ID_PUBLISH)
+training_dataset$DAYS_LAST_PHONE_CHANGE<- abs(training_dataset$DAYS_LAST_PHONE_CHANGE)
+training_dataset$DAYS_EMPLOYED <- abs(training_dataset$DAYS_EMPLOYED)
 
 
 #dropping the customer ID so it's not accidentally used as a predictor
@@ -279,8 +260,8 @@ plot(nb3)
 print(nb3$finalModel$tuneValue)
 
 #generates confusion matrices for the training and testing predictions
-cm <- confusionMatrix(data = nb3_predict_class, reference = training_sample$TARGET)
-cm_test <- confusionMatrix(data <- nb3_predict_test, reference = t_test$TARGET)
+cm <- confusionMatrix(data = nb3_predict_class, reference = training_upsample$TARGET)
+cm_test <- confusionMatrix(data <- nb3_predict_test, reference = test_part$TARGET)
 
 #outputs confusion matrices
 print(cm)
